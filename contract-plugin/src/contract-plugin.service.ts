@@ -1,4 +1,134 @@
+// File: contract-plugin.service.ts
+
 import { Tool } from "@goat-sdk/core";
+import { EVMWalletClient } from "@goat-sdk/wallet-evm";
+import { parseUnits, encodeAbiParameters } from "viem";
+import { ContractAddressParams, ContractFunctionParams, ContractFunctionDetails } from "./parameters";
+
+// Define an interface for contract methods
+interface Method {
+    inputs: Array<{ internalType?: string; name: string; type: string }>;
+    method_id: string;
+    name: string;
+    names: string[];
+    outputs: Array<{ type: string; value: string | number; internalType?: string; name?: string }>;
+    stateMutability: "view" | "pure" | "nonpayable" | "payable";
+    type: "function" | "constructor" | "event" | "fallback" | "receive";
+}
+
+export class ContractService {
+    // Helper function to make API calls
+    private async fetchApi(endpoint: string) {
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+            throw new Error(`API call failed: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    @Tool({
+        name: "contract_details",
+        description: "Returns information about a contract",
+    })
+    async getContractDetails(parameters: ContractAddressParams) {
+        const contractAddress = parameters.contractAddress;
+        const data = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}`);
+        return {
+            is_verified: data.is_verified,
+            name: data.name,
+        };
+    }
+
+    @Tool({
+        name: "contract_read_methods",
+        description: "Returns information on the read methods of a contract",
+    })
+    async getReadMethods(parameters: ContractAddressParams) {
+        const contractAddress = parameters.contractAddress;
+        const contractData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}`);
+
+        if (contractData.has_methods_read) {
+            const readMethodsData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}/methods-read`);
+            return readMethodsData.map((method: Method) => method.name).filter((name: string) => name !== undefined);
+        } else {
+            throw new Error("No read methods found for the given contract.");
+        }
+    }
+
+    @Tool({
+        name: "contract_write_methods",
+        description: "Returns information on the write methods of a contract",
+    })
+    async getWriteMethods(parameters: ContractAddressParams) {
+        const contractAddress = parameters.contractAddress;
+        const contractData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}`);
+
+        if (contractData.has_methods_write) {
+            const writeMethodsData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}/methods-write`);
+            return writeMethodsData.map((method: Method) => method.name).filter((name: string) => name !== undefined);
+        } else {
+            throw new Error("No write methods found for the given contract.");
+        }
+    }
+
+    @Tool({
+        name: "method_params",
+        description: "Returns the params of a method/function",
+    })
+    async getMethodParams(parameters: ContractFunctionDetails) {
+        const { contractAddress, functionName } = parameters;
+        const contractData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}`);
+
+        const allMethods = [...(await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}/methods-write`)), 
+                            ...(await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}/methods-read`))];
+
+        const method = allMethods.find((m: Method) => m.name === functionName);
+        if (!method) {
+            throw new Error(`Method ${functionName} not found in contract methods.`);
+        }
+
+        return method.inputs.map((input) => input.name);
+    }
+
+    @Tool({
+        name: "method_caller",
+        description: "Calls a smart contract method",
+    })
+    async callFunction(walletClient: EVMWalletClient, parameters: ContractFunctionParams): Promise<string> {
+        const { contractAddress, functionName, functionParams } = parameters;
+        const functionArgs = Object.values(functionParams);
+
+        try {
+            const contractData = await this.fetchApi(`https://explorer-mode-mainnet-0.t.conduit.xyz/api/v2/smart-contracts/${contractAddress}`);
+
+            if (!contractData.abi || !Array.isArray(contractData.abi)) {
+                throw new Error("Contract ABI not found or invalid.");
+            }
+
+            const methodInAbi = contractData.abi.find((method: any) => method.name === functionName && method.type === "function");
+
+            if (!methodInAbi) {
+                throw new Error(`Function ${functionName} not found in contract ABI.`);
+            }
+
+            const transactionHash = await walletClient.sendTransaction({
+                to: contractAddress,
+                abi: contractData.abi,
+                functionName,
+                args: functionArgs,
+            });
+
+            return transactionHash.hash;
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            throw new Error(`Failed to call contract method: ${errorMessage}`);
+        }
+    }
+}
+
+
+//---OLD CODE---
+/*import { Tool } from "@goat-sdk/core";
 import { EVMWalletClient } from "@goat-sdk/wallet-evm";
 import { parseUnits } from "viem";
 import { encodeAbiParameters } from "viem";
@@ -207,4 +337,4 @@ export class ContractService {
         }
     }
     
-}
+}*/
